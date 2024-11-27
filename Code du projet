@@ -1,0 +1,335 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity Control_Barrier is
+  Port (
+    sw1               : in  STD_LOGIC;                         -- Switch SW1 pour contrôler la barrière en mode manuel
+    pin_input         : in  STD_LOGIC_VECTOR(3 downto 0);      -- Code PIN de 4 bits
+    key3              : in  STD_LOGIC;                         -- Bouton KEY3 pour accéder au mode manuel
+    clk               : in  STD_LOGIC;                         -- Horloge principale
+    trig_ultrasonic   : out STD_LOGIC;                         -- Signal TRIG pour le premier capteur ultrason
+    trig_ultrasonic2  : out STD_LOGIC;                         -- Signal TRIG pour le deuxième capteur ultrason
+    trig_ultrasonic3  : out STD_LOGIC;                         -- Signal TRIG pour le troisième capteur ultrason
+    echo_ultrasonic   : in  STD_LOGIC;                         -- Signal ECHO du premier capteur ultrason
+    echo_ultrasonic2  : in  STD_LOGIC;                         -- Signal ECHO du deuxième capteur ultrason
+    echo_ultrasonic3  : in  STD_LOGIC;                         -- Signal ECHO du troisième capteur ultrason
+    barrier_position  : out STD_LOGIC;                         -- Signal PWM pour le servomoteur
+    HEX0              : out STD_LOGIC_VECTOR(6 downto 0);      -- Afficheur 7 segments
+    HEX5              : out STD_LOGIC_VECTOR(6 downto 0);      -- Afficheur 7 segments 5
+    HEX4              : out STD_LOGIC_VECTOR(6 downto 0);      -- Afficheur 7 segments 4
+    HEX3              : out STD_LOGIC_VECTOR(6 downto 0);      -- Afficheur 7 segments 3
+    HEX2              : out STD_LOGIC_VECTOR(6 downto 0);      -- Afficheur 7 segments 2
+    led_red           : out STD_LOGIC;                         -- LED rouge
+    led_green         : out STD_LOGIC;                         -- LED verte
+    led_orange        : out STD_LOGIC;                         -- LED orange
+    ledr0             : out STD_LOGIC;                         -- LED rouge sur la carte pour le mode manuel
+    buzzer            : out STD_LOGIC;                         -- Buzzer pour jouer un son
+    reset                      : in  STD_LOGIC                          -- Signal de reset
+  );
+end Control_Barrier;
+
+architecture Behavioral of Control_Barrier is
+  constant PIN_CODE                                  : STD_LOGIC_VECTOR(3 downto 0) := "0101";  -- Code PIN pour le mode manuel
+  signal entered_code                                : STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
+  signal manual_mode                                 : STD_LOGIC := '0';
+  -- Signaux pour les capteurs ultrason
+  signal trig_counter1, trig_counter2, trig_counter3 : integer := 0;
+  signal echo_counter1, echo_counter2, echo_counter3 : integer := 0;
+  signal detect1, detect2, detect3                   : STD_LOGIC := '0';
+  signal delay_counter2                              : integer := 0;
+  signal barrier_closed, barrier_open                : STD_LOGIC := '0';
+  signal train_detected                              : STD_LOGIC := '0'; -- Indicateur pour savoir si le capteur 1 a détecté un train
+
+  constant TRIG_DURATION                             : integer := 500;  -- Durée du signal TRIG en cycles d'horloge
+  constant MES_PERIODE                               : integer := 12_500_000; -- Durée de la période de mesure
+  constant THREE_SEC_COUNT                           : integer := 3 * 50_000_000; -- 3 secondes avec clk = 50MHz
+
+  -- PWM pour le servomoteur
+  signal pwm_counter                                 : integer := 0;
+  constant PWM_PERIOD                                : integer := 1_000_000;
+  constant PWM_HIGH_MIN                              : integer := 50_000;   -- Pour position 0° (ouverte)
+  constant PWM_HIGH_MAX                              : integer := 100_000;  -- Pour position 180° (fermée)
+
+  -- LED et affichage
+  signal led_red_int, led_green_int, led_orange_int  : STD_LOGIC := '0';
+  signal led_orange_blink                            : STD_LOGIC := '0';
+  signal blink_counter                               : integer := 0;
+
+  -- Signaux pour le buzzer
+  signal buzzer_signal                               : STD_LOGIC := '0';
+  signal buzzer_counter                              : integer := 0;
+  constant BUZZER_PERIOD                             : integer := 25_000_000;
+
+begin
+ 
+  process(key3, pin_input, reset)
+  begin
+    -- Vérification du code PIN pour entrer en mode manuel
+    if reset = '1' then
+      manual_mode <= '0';
+    elsif not(pin_input = PIN_CODE) then
+      manual_mode <= '0';
+    elsif pin_input = PIN_CODE and falling_edge(key3) then
+      manual_mode <= not manual_mode;
+    end if;
+            ledr0 <= manual_mode;
+       end process;
+
+  -- Gestion du signal TRIG et de la détection pour chaque capteur ultrason
+  process(clk, reset)
+  begin
+    if reset = '1' then
+      entered_code <= (others => '0');
+      trig_counter1 <= 0;
+      trig_counter2 <= 0;
+      trig_counter3 <= 0;
+      echo_counter1 <= 0;
+      echo_counter2 <= 0;
+      echo_counter3 <= 0;
+      detect1 <= '0';
+      detect2 <= '0';
+      detect3 <= '0';
+    elsif rising_edge(clk) then
+      -- Capteur 1
+      if trig_counter1 >= MES_PERIODE then
+        trig_counter1 <= 0;
+        if echo_counter1 > 1000 and echo_counter1 < 30_000 then
+          detect1 <= '1';
+        else
+          detect1 <= '0';
+        end if;
+        echo_counter1 <= 0;
+      else
+        trig_counter1 <= trig_counter1 + 1;
+      end if;
+
+      if trig_counter1 < TRIG_DURATION then
+        trig_ultrasonic <= '1';
+      else
+        trig_ultrasonic <= '0';
+      end if;
+
+      if echo_ultrasonic = '1' then
+        echo_counter1 <= echo_counter1 + 1;
+      end if;
+
+      -- Capteur 2
+      if trig_counter2 >= MES_PERIODE then
+        trig_counter2 <= 0;
+        if echo_counter2 > 1000 and echo_counter2 < 30_000 then
+          detect2 <= '1';
+        else
+          detect2 <= '0';
+        end if;
+        echo_counter2 <= 0;
+      else
+        trig_counter2 <= trig_counter2 + 1;
+      end if;
+
+      if trig_counter2 < TRIG_DURATION then
+        trig_ultrasonic2 <= '1';
+      else
+        trig_ultrasonic2 <= '0';
+      end if;
+
+      if echo_ultrasonic2 = '1' then
+        echo_counter2 <= echo_counter2 + 1;
+      end if;
+
+      -- Capteur 3
+      if trig_counter3 >= MES_PERIODE then
+        trig_counter3 <= 0;
+        if echo_counter3 > 1000 and echo_counter3 < 30_000 then
+          detect3 <= '1';
+        else
+          detect3 <= '0';
+        end if;
+        echo_counter3 <= 0;
+      else
+        trig_counter3 <= trig_counter3 + 1;
+      end if;
+
+      if trig_counter3 < TRIG_DURATION then
+        trig_ultrasonic3 <= '1';
+      else
+        trig_ultrasonic3 <= '0';
+      end if;
+
+      if echo_ultrasonic3 = '1' then
+        echo_counter3 <= echo_counter3 + 1;
+      end if;
+    end if;
+  end process;
+
+  -- Gestion de l'affichage, des LED, de la barrière et du buzzer
+  process(clk, reset)
+  begin
+    if reset = '1' then
+      train_detected <= '0';
+      delay_counter2 <= 0;
+      led_red_int <= '0';
+      led_green_int <= '0';
+      led_orange_int <= '0';
+      barrier_closed <= '0';
+      barrier_open <= '0';
+      blink_counter <= 0;
+      buzzer_signal <= '0';
+      buzzer_counter <= 0;
+            
+            --mode manuel
+                  elsif manual_mode = '1' then
+                  if sw1 = '1' then
+          barrier_open <= '1';
+          barrier_closed <= '0';
+        else
+          barrier_open <= '0';
+          barrier_closed <= '1';
+        end if;
+        buzzer_signal <= '0';  -- Désactiver le buzzer en mode manuel
+     
+       
+    elsif rising_edge(clk) then
+      -- Capteur 1 détecte un obstacle : fermer la barrière, LED rouge et afficher STOP, maintenir l'état
+      if detect1 = '1' then
+        train_detected <= '1';
+        barrier_closed <= '1';
+        barrier_open <= '0';  -- Indiquer qu'un train a été détecté
+      elsif detect3 = '1' then
+        -- Capteur 3 détecte un obstacle : ouvrir la barrière, LED verte et afficher GO, maintenir l'état
+        train_detected <= '0';
+        barrier_closed <= '0';
+        barrier_open <= '1'; -- Réinitialiser la détection de train
+      end if;
+
+      -- Capteur 2 détecte un obstacle, train détecté : ouvrir la barrière et sonner le buzzer après 3 secondes
+      if detect2 = '1' and train_detected = '1' and manual_mode = '0' then
+        if delay_counter2 < THREE_SEC_COUNT then
+          delay_counter2 <= delay_counter2 + 1;
+        else
+          barrier_open <= '1';
+          barrier_closed <= '0';
+          led_red_int <= '1';
+          led_green_int <= '0';
+          led_orange_int <= '0';
+
+          -- Affichage OUT
+          HEX5 <= "1000000"; -- O
+          HEX4 <= "1000001"; -- U
+          HEX3 <= "0000111"; -- T
+          HEX2 <= "1111111"; -- Blank
+          HEX0 <= "1001111"; -- Code pour afficher '1'
+
+          -- Clignotement de la LED orange si capteur 2 détecte et feu ROUGE
+          if blink_counter < 25_000_000 then
+            blink_counter <= blink_counter + 1;
+          else
+            blink_counter <= 0;
+            led_orange_blink <= not led_orange_blink;
+          end if;
+
+          -- Activation du buzzer avec bip
+          if buzzer_counter < BUZZER_PERIOD / 2 then
+            buzzer_counter <= buzzer_counter + 1;
+            buzzer_signal <= '1';
+          else
+            buzzer_counter <= (buzzer_counter + 1) mod BUZZER_PERIOD;
+            buzzer_signal <= '0';
+          end if;
+        end if;
+      elsif train_detected = '1' then
+        led_red_int <= '1';
+        led_green_int <= '0';
+        led_orange_int <= '0';
+        barrier_closed <= '1';  -- Maintenir la barrière fermée
+        barrier_open <= '0';    -- Annuler l'ouverture de la barrière
+
+        -- Affichage STOP
+        HEX0 <= "1001111"; -- Code pour afficher '1'
+        HEX5 <= "0010010"; -- S
+        HEX4 <= "0000111"; -- T
+        HEX3 <= "1000000"; -- O
+        HEX2 <= "0001100"; -- P
+
+        -- Désactivation du buzzer
+        buzzer_signal <= '0';
+        delay_counter2 <= 0;
+      elsif detect2 = '1' and train_detected = '0' then
+        -- Capteur 2 détecte un obstacle sans train détecté : allumer la LED orange après 3 secondes
+        if delay_counter2 < THREE_SEC_COUNT then
+          delay_counter2 <= delay_counter2 + 1;
+        else
+          led_red_int <= '0';
+          led_green_int <= '0';
+          led_orange_int <= '1';
+
+          -- Affichage ATTENTION
+          HEX0 <= "1001111"; -- Code pour afficher '1'
+          HEX5 <= "1000000"; -- O
+          HEX4 <= "1000001"; -- U
+          HEX3 <= "0000111"; -- T
+          HEX2 <= "1111111"; -- Blank
+
+          -- Désactivation du buzzer
+          delay_counter2 <= 0;
+          buzzer_signal <= '0';
+        end if;
+      elsif train_detected = '0' then
+        led_red_int <= '0';
+        led_green_int <= '1';
+        led_orange_int <= '0';
+        barrier_open <= '1';
+        barrier_closed <= '0';
+
+        -- Affichage GO
+        HEX0 <= "1000000"; -- Code pour afficher '0'
+        HEX5 <= "1000010"; -- G
+        HEX4 <= "1000000"; -- O
+        HEX3 <= "1111111"; -- Blank
+        HEX2 <= "1111111"; -- Blank
+
+        -- Désactivation du buzzer
+        buzzer_signal <= '0';
+        delay_counter2 <= 0;
+      end if;
+    end if;
+  end process;
+
+  -- Assignation des signaux internes aux LED externes
+  led_red <= led_red_int;
+  led_green <= led_green_int;
+  led_orange <= '1' when (led_orange_int = '1') or (led_orange_blink = '1' and detect2 = '1') else '0';
+
+  -- Assignation du signal interne du buzzer à la sortie
+  buzzer <= buzzer_signal;
+
+  -- Génération du signal PWM pour le servomoteur (fermeture/ouverte)
+  process(clk, reset)
+  begin
+    if reset = '1' then
+      pwm_counter <= 0;
+      barrier_position <= '0';
+    elsif rising_edge(clk) then
+      if pwm_counter < PWM_PERIOD then
+        pwm_counter <= pwm_counter + 1;
+      else
+        pwm_counter <= 0;
+      end if;
+
+      if barrier_closed = '1' then
+        if pwm_counter < PWM_HIGH_MAX then
+          barrier_position <= '1';
+        else
+          barrier_position <= '0';
+        end if;
+      elsif barrier_open = '1' then
+        if pwm_counter < PWM_HIGH_MIN then
+          barrier_position <= '1';
+        else
+          barrier_position <= '0';
+        end if;
+      end if;
+    end if;
+  end process;
+
+end Behavioral;
